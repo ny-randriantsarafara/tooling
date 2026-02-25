@@ -1,0 +1,6 @@
+# Private config — never track this
+.env
+*.env
+
+# OS
+.DS_Store

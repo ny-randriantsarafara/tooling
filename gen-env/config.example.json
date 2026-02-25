@@ -1,0 +1,154 @@
+{
+  "_comment": "gen-env config — copy to ~/.config/gen-env/config.json and fill in your values.",
+  "version": "1",
+  "companies": [
+    {
+      "id": "acme",
+      "name": "Acme Corp",
+
+      "_comment_auth": "Supported auth types: gimme-aws-creds | aws-sso | static-profile",
+      "auth": {
+        "type": "gimme-aws-creds",
+        "config_file": "~/.okta_aws_login_config"
+      },
+
+      "_comment_profile_map": "Map environment names to AWS profile names, grouped by team/account group.",
+      "profile_map": {
+        "backend-team": {
+          "dev":     "acme-backend-dev",
+          "staging": "acme-backend-stg",
+          "prod":    "acme-backend-prd"
+        }
+      },
+
+      "projects": [
+        {
+          "id": "simple-api",
+          "name": "Simple API",
+          "_comment": "Single-app project (no services array) — straightforward case.",
+          "path": "~/projects/acme/simple-api",
+          "profile_group": "backend-team",
+          "aws_region": "us-east-1",
+          "template": ".env.example",
+          "envs": {
+            "dev": {
+              "_comment_sources": "Sources merged in order — later entries override earlier ones.",
+              "sources": [
+                { "type": "ecs", "cluster": "acme-cluster", "service": "api-service" },
+                { "type": "ssm", "path": "/acme/api/dev" }
+              ],
+              "output": ".env"
+            },
+            "staging": {
+              "sources": [
+                { "type": "ecs", "cluster": "acme-cluster-stg", "service": "api-service" }
+              ],
+              "output": ".env"
+            },
+            "prod": {
+              "sources": [
+                { "type": "ecs", "cluster": "acme-cluster-prd", "service": "api-service" },
+                { "type": "secrets_manager", "secret_id": "acme/api/prod" }
+              ],
+              "output": ".env"
+            }
+          }
+        },
+
+        {
+          "id": "monorepo",
+          "name": "Monorepo",
+          "_comment": "Monorepo project: 'services' replaces top-level envs. Each service has its own sources, template, and output path. profile_group and aws_region are inherited from project level but can be overridden per-service.",
+          "path": "~/projects/acme/monorepo",
+          "profile_group": "backend-team",
+          "aws_region": "us-east-1",
+
+          "services": [
+            {
+              "id": "backend",
+              "name": "Backend API",
+              "template": "backend/.env.example",
+              "envs": {
+                "dev": {
+                  "sources": [
+                    { "type": "ecs", "cluster": "acme-cluster", "service": "backend-service" }
+                  ],
+                  "output": "backend/.env"
+                },
+                "staging": {
+                  "sources": [
+                    { "type": "ecs", "cluster": "acme-cluster-stg", "service": "backend-service" }
+                  ],
+                  "output": "backend/.env"
+                }
+              }
+            },
+            {
+              "id": "frontend",
+              "name": "Frontend",
+              "_comment": "Template-only service (no AWS sources needed — just local overrides per env).",
+              "template": "frontend/.env.example",
+              "envs": {
+                "dev": {
+                  "sources": [],
+                  "output": "frontend/.env"
+                },
+                "staging": {
+                  "sources": [],
+                  "output": "frontend/.env"
+                }
+              }
+            },
+            {
+              "id": "worker",
+              "name": "Background Worker",
+              "_comment": "Service-level aws_region override example.",
+              "aws_region": "us-west-2",
+              "envs": {
+                "dev": {
+                  "sources": [
+                    { "type": "ssm", "path": "/acme/worker/dev" }
+                  ],
+                  "output": "services/worker/.env"
+                }
+              }
+            }
+          ]
+        }
+      ]
+    },
+
+    {
+      "id": "startup",
+      "name": "Startup Inc",
+      "auth": {
+        "type": "aws-sso",
+        "sso_start_url": "https://my-company.awsapps.com/start",
+        "sso_region": "eu-west-1"
+      },
+      "profile_map": {
+        "default": {
+          "dev":  "startup-dev",
+          "prod": "startup-prod"
+        }
+      },
+      "projects": [
+        {
+          "id": "backend",
+          "name": "Backend",
+          "path": "~/projects/startup/backend",
+          "profile_group": "default",
+          "aws_region": "eu-west-1",
+          "envs": {
+            "dev": {
+              "sources": [
+                { "type": "ecs", "cluster": "startup-cluster", "service": "backend-service" }
+              ],
+              "output": ".env"
+            }
+          }
+        }
+      ]
+    }
+  ]
+}
