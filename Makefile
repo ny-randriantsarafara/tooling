@@ -1,14 +1,18 @@
-PREFIX    ?= $(HOME)/.local
-BIN_DIR    = $(PREFIX)/bin
-CONFIG_DIR = $(HOME)/.config/gen-env
-SCRIPT     = gen-env/gen-env
-EXAMPLE    = gen-env/config.example.json
+PREFIX     ?= $(HOME)/.local
+BIN_DIR     = $(PREFIX)/bin
+LIB_DIR     = $(PREFIX)/lib/gen-env
+CONFIG_DIR  = $(HOME)/.config/gen-env
+SCRIPT      = gen-env/gen-env
+LIB_FILES   = gen-env/lib/colors.sh gen-env/lib/helpers.sh gen-env/lib/config.sh gen-env/lib/ui.sh gen-env/lib/auth.sh gen-env/lib/sources.sh
+EXAMPLE     = gen-env/config.example.json
 
 .PHONY: install uninstall check-deps
 
 install: check-deps
-	@mkdir -p $(BIN_DIR) $(CONFIG_DIR)
+	@mkdir -p $(BIN_DIR) $(LIB_DIR) $(CONFIG_DIR)
 	@cp $(SCRIPT) $(BIN_DIR)/gen-env && chmod +x $(BIN_DIR)/gen-env
+	@cp $(LIB_FILES) $(LIB_DIR)/
+	@ln -sfn $(LIB_DIR) $(BIN_DIR)/lib
 	@if [ ! -f $(CONFIG_DIR)/config.json ]; then \
 		cp $(EXAMPLE) $(CONFIG_DIR)/config.json; \
 		echo "  Config created at $(CONFIG_DIR)/config.json"; \
@@ -20,6 +24,8 @@ install: check-deps
 
 uninstall:
 	@rm -f $(BIN_DIR)/gen-env
+	@rm -f $(BIN_DIR)/lib
+	@rm -rf $(LIB_DIR)
 	@echo "  gen-env removed."
 
 check-deps:

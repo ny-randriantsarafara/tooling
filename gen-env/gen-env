@@ -6,395 +6,20 @@ set -euo pipefail
 VERSION="1.0.0"
 CONFIG_FILE="${GEN_ENV_CONFIG:-$HOME/.config/gen-env/config.json}"
 
-# ── ANSI COLORS ───────────────────────────────────────────────────────────────
-if [[ -t 1 ]]; then
-  BOLD='\033[1m'
-  DIM='\033[2m'
-  RED='\033[0;31m'
-  GREEN='\033[0;32m'
-  YELLOW='\033[0;33m'
-  CYAN='\033[0;36m'
-  RESET='\033[0m'
-else
-  BOLD='' DIM='' RED='' GREEN='' YELLOW='' CYAN='' RESET=''
-fi
+# ── Load modules ─────────────────────────────────────────────────────────────
+# Figure out where this script lives so we can find lib/ next to it.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LIB_DIR="${SCRIPT_DIR}/lib"
 
-# ── HELPERS ───────────────────────────────────────────────────────────────────
-info()    { echo -e "  ${CYAN}${*}${RESET}"; }
-ok()      { echo -e "  ${GREEN}✓${RESET} ${*}"; }
-warn()    { echo -e "  ${YELLOW}⚠${RESET}  ${*}" >&2; }
-err()     { echo -e "  ${RED}✗${RESET}  ${*}" >&2; }
-die()     { err "${*}"; exit 1; }
-bold()    { echo -e "${BOLD}${*}${RESET}"; }
+source "${LIB_DIR}/colors.sh"     # ANSI color codes
+source "${LIB_DIR}/helpers.sh"    # info, ok, warn, die, expand_path, count_lines
+source "${LIB_DIR}/config.sh"     # load_config, cfg
+source "${LIB_DIR}/ui.sh"         # print_banner, select_from_list, select_with_all
+source "${LIB_DIR}/auth.sh"       # check_credentials, offer_refresh
+source "${LIB_DIR}/sources.sh"    # fetch_sources, merge_with_template
 
-expand_path() {
-  # Expand ~ in paths
-  echo "${1/#\~/$HOME}"
-}
+# ── --list command ───────────────────────────────────────────────────────────
 
-# Spinner — call start_spinner "msg"; stop_spinner "done msg"
-_SPINNER_PID=""
-start_spinner() {
-  local msg="$1"
-  if [[ -t 1 ]]; then
-    (
-      local frames=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏')
-      local i=0
-      while true; do
-        printf "\r  ${CYAN}%s${RESET} %s" "${frames[$((i % ${#frames[@]}))]}" "$msg"
-        sleep 0.1
-        (( i++ )) || true
-      done
-    ) &
-    _SPINNER_PID=$!
-  else
-    echo -e "  ⠋ ${msg}"
-  fi
-}
-
-stop_spinner() {
-  local msg="${1:-}"
-  if [[ -n "$_SPINNER_PID" ]]; then
-    kill "$_SPINNER_PID" 2>/dev/null && wait "$_SPINNER_PID" 2>/dev/null || true
-    _SPINNER_PID=""
-    printf "\r\033[2K"
-  fi
-  [[ -n "$msg" ]] && ok "$msg"
-}
-
-# ── CONFIG LOADING ────────────────────────────────────────────────────────────
-load_config() {
-  [[ -f "$CONFIG_FILE" ]] || die "Config not found: $CONFIG_FILE\n  Run: make install"
-  jq -e . "$CONFIG_FILE" >/dev/null 2>&1 || die "Config is not valid JSON: $CONFIG_FILE"
-  CONFIG=$(jq '.' "$CONFIG_FILE")
-}
-
-cfg() { echo "$CONFIG" | jq -r "${1}"; }
-
-# ── SELECTION UI ──────────────────────────────────────────────────────────────
-# Use fzf if available, else numbered menu
-HAS_FZF=false
-command -v fzf >/dev/null 2>&1 && HAS_FZF=true
-
-# select_from_list PROMPT item1 item2 ...
-# Prints the selected item to stdout
-select_from_list() {
-  local prompt="$1"; shift
-  local items=("$@")
-  local count=${#items[@]}
-
-  if [[ $count -eq 0 ]]; then
-    die "No items to select from"
-  fi
-
-  if [[ $count -eq 1 ]]; then
-    echo "${items[0]}"
-    return 0
-  fi
-
-  if $HAS_FZF; then
-    local selected
-    selected=$(printf '%s\n' "${items[@]}" | fzf --prompt="  $prompt > " --height=~10 --border=none --no-info --ansi)
-    echo "$selected"
-  else
-    echo -e "\n  ${prompt}:"
-    local i=1
-    for item in "${items[@]}"; do
-      echo -e "    ${DIM}[${i}]${RESET} ${item}"
-      (( i++ ))
-    done
-    echo -ne "\n  Select [1-${count}]: "
-    local choice
-    read -r choice
-    if [[ "$choice" =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= count )); then
-      echo "${items[$((choice - 1))]}"
-    else
-      die "Invalid selection: $choice"
-    fi
-  fi
-}
-
-# select_with_all PROMPT item1 item2 ...  (adds [A] All option)
-# Prints selected item, or "ALL" if user picks all
-select_with_all() {
-  local prompt="$1"; shift
-  local items=("$@")
-  local count=${#items[@]}
-
-  if $HAS_FZF; then
-    local all_items=("${items[@]}" "All services")
-    local selected
-    selected=$(printf '%s\n' "${all_items[@]}" | fzf --prompt="  $prompt > " --height=~12 --border=none --no-info --ansi)
-    if [[ "$selected" == "All services" ]]; then
-      echo "ALL"
-    else
-      echo "$selected"
-    fi
-  else
-    echo -e "\n  ${prompt}:"
-    local i=1
-    for item in "${items[@]}"; do
-      echo -e "    ${DIM}[${i}]${RESET} ${item}"
-      (( i++ ))
-    done
-    echo -e "    ${DIM}[A]${RESET} All services"
-    echo -ne "\n  Select [1-${count}/A]: "
-    local choice
-    read -r choice
-    if [[ "${choice,,}" == "a" ]]; then
-      echo "ALL"
-    elif [[ "$choice" =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= count )); then
-      echo "${items[$((choice - 1))]}"
-    else
-      die "Invalid selection: $choice"
-    fi
-  fi
-}
-
-# ── SOURCE HANDLERS ───────────────────────────────────────────────────────────
-# Each handler prints KEY="VALUE" lines to stdout.
-# To add a new source type: add handle_source_<type>() + case entry in fetch_sources()
-
-handle_source_ecs() {
-  local cluster="$1" service="$2" profile="$3" region="$4"
-  local task_def
-  task_def=$(aws ecs describe-services \
-    --cluster "$cluster" --services "$service" \
-    --profile "$profile" --region "$region" \
-    --query "services[0].taskDefinition" --output text 2>&1) \
-    || die "ECS describe-services failed for $cluster/$service: $task_def"
-
-  [[ "$task_def" == "None" || -z "$task_def" ]] && die "Service '$service' not found in cluster '$cluster'"
-
-  aws ecs describe-task-definition \
-    --task-definition "$task_def" \
-    --profile "$profile" --region "$region" \
-    --query "taskDefinition.containerDefinitions[].environment[]" \
-    --output json 2>&1 \
-    | jq -r '.[] | "\(.name)=\"\(.value)\""'
-}
-
-handle_source_ssm() {
-  local path="$1" profile="$2" region="$3"
-  aws ssm get-parameters-by-path \
-    --path "$path" --recursive --with-decryption \
-    --profile "$profile" --region "$region" \
-    --output json 2>&1 \
-    | jq -r '.Parameters[] | ((.Name | split("/") | last) + "=\"" + .Value + "\"")'
-}
-
-handle_source_secrets_manager() {
-  local secret_id="$1" profile="$2" region="$3"
-  local value
-  value=$(aws secretsmanager get-secret-value \
-    --secret-id "$secret_id" \
-    --profile "$profile" --region "$region" \
-    --output json 2>&1 | jq -r '.SecretString')
-
-  # If value is a JSON object, expand to KEY=VALUE pairs; else single SECRET= var
-  if echo "$value" | jq -e 'type == "object"' >/dev/null 2>&1; then
-    echo "$value" | jq -r 'to_entries[] | "\(.key)=\"\(.value)\""'
-  else
-    echo "SECRET=\"$value\""
-  fi
-}
-
-# fetch_sources SOURCES_JSON PROFILE REGION
-# Prints merged KEY="VALUE" lines, later entries override earlier
-fetch_sources() {
-  local sources_json="$1" profile="$2" region="$3"
-  local combined=""
-  local type
-
-  while IFS= read -r source; do
-    type=$(echo "$source" | jq -r '.type')
-    local output=""
-    case "$type" in
-      ecs)
-        output=$(handle_source_ecs \
-          "$(echo "$source" | jq -r '.cluster')" \
-          "$(echo "$source" | jq -r '.service')" \
-          "$profile" "$region")
-        ;;
-      ssm)
-        output=$(handle_source_ssm \
-          "$(echo "$source" | jq -r '.path')" \
-          "$profile" "$region")
-        ;;
-      secrets_manager)
-        output=$(handle_source_secrets_manager \
-          "$(echo "$source" | jq -r '.secret_id')" \
-          "$profile" "$region")
-        ;;
-      *)
-        warn "Unknown source type: $type — skipping"
-        continue
-        ;;
-    esac
-    combined=$(merge_env_lines "$combined" "$output")
-  done < <(echo "$sources_json" | jq -c '.[]')
-
-  echo "$combined"
-}
-
-# merge_env_lines BASE OVERRIDE — later keys win
-merge_env_lines() {
-  local base="$1" override="$2"
-  if [[ -z "$base" ]]; then
-    echo "$override"
-    return
-  fi
-  if [[ -z "$override" ]]; then
-    echo "$base"
-    return
-  fi
-  # Build associative array: keys from base, then override replaces/adds
-  local -A kv
-  local order=()
-  while IFS= read -r line; do
-    [[ -z "$line" ]] && continue
-    local key="${line%%=*}"
-    if [[ -z "${kv[$key]+_}" ]]; then
-      order+=("$key")
-    fi
-    kv["$key"]="${line#*=}"
-  done < <(printf '%s\n' "$base" "$override")
-  for k in "${order[@]}"; do
-    echo "${k}=${kv[$k]}"
-  done
-}
-
-count_lines() {
-  if [[ -z "$1" ]]; then echo 0; return; fi
-  echo "$1" | grep -c '.' || echo 0
-}
-
-# ── TEMPLATE MERGE ────────────────────────────────────────────────────────────
-# Fill keys missing from fetched vars using template file values
-merge_with_template() {
-  local fetched="$1" template_path="$2"
-  [[ -z "$template_path" || ! -f "$template_path" ]] && { echo "$fetched"; return; }
-
-  local -A kv
-  while IFS= read -r line; do
-    [[ -z "$line" || "$line" == \#* ]] && continue
-    local key="${line%%=*}"
-    [[ -z "${kv[$key]+_}" ]] && kv["$key"]="${line#*=}"  # only if not already set
-  done < <(printf '%s\n' "$fetched")
-
-  # Add template keys not already present
-  local result="$fetched"
-  while IFS= read -r line; do
-    [[ -z "$line" || "$line" == \#* ]] && continue
-    local key="${line%%=*}"
-    if [[ -z "${kv[$key]+_}" ]]; then
-      result=$(printf '%s\n%s' "$result" "$line")
-      kv["$key"]="${line#*=}"
-    fi
-  done < "$template_path"
-
-  echo "$result"
-}
-
-# ── AUTH HANDLERS ─────────────────────────────────────────────────────────────
-# To add a new auth type: add check_auth_<type>() and refresh_auth_<type>()
-
-check_auth_gimme_aws_creds() {
-  local profile="$1"
-  local creds_file="$HOME/.aws/credentials"
-  [[ -f "$creds_file" ]] || { echo "no_file"; return; }
-
-  local expires
-  expires=$(awk -v p="[$profile]" '
-    $0 == p { found=1; next }
-    found && /^\[/ { found=0 }
-    found && /x_security_token_expires/ { print $3; exit }
-  ' "$creds_file")
-
-  if [[ -z "$expires" ]]; then
-    echo "unknown"
-    return
-  fi
-
-  local exp_epoch now_epoch
-  exp_epoch=$(date -d "$expires" +%s 2>/dev/null || date -j -f "%Y-%m-%dT%H:%M:%S" "${expires%%+*}" +%s 2>/dev/null || echo 0)
-  now_epoch=$(date +%s)
-
-  if (( exp_epoch > now_epoch )); then
-    local remaining=$(( exp_epoch - now_epoch ))
-    local h=$(( remaining / 3600 ))
-    local m=$(( (remaining % 3600) / 60 ))
-    echo "valid:${h}h ${m}m"
-  else
-    echo "expired"
-  fi
-}
-
-refresh_auth_gimme_aws_creds() {
-  local profile="$1"
-  echo -e "\n  Refreshing credentials via gimme-aws-creds..."
-  gimme-aws-creds --profile "$profile"
-}
-
-check_auth_aws_sso() {
-  local profile="$1"
-  local result
-  result=$(aws sts get-caller-identity --profile "$profile" --output text 2>&1)
-  if echo "$result" | grep -q "SSO token has expired\|Error loading SSO Token\|No SSO Token"; then
-    echo "expired"
-  elif echo "$result" | grep -q "^[0-9]"; then
-    echo "valid:SSO"
-  else
-    echo "unknown"
-  fi
-}
-
-refresh_auth_aws_sso() {
-  local profile="$1"
-  echo -e "\n  Refreshing SSO session..."
-  aws sso login --profile "$profile"
-}
-
-check_auth_static_profile() { echo "static"; }
-refresh_auth_static_profile() { warn "Static profile — no refresh available."; }
-
-check_credentials() {
-  local auth_type="$1" profile="$2"
-  local fn="check_auth_${auth_type//-/_}"
-  if declare -f "$fn" >/dev/null; then
-    "$fn" "$profile"
-  else
-    echo "unknown"
-  fi
-}
-
-offer_refresh() {
-  local auth_type="$1" profile="$2"
-  echo -ne "  ${YELLOW}Credentials expired.${RESET} Refresh now? [Y/n]: "
-  local ans
-  read -r ans
-  if [[ "${ans,,}" != "n" ]]; then
-    local fn="refresh_auth_${auth_type//-/_}"
-    if declare -f "$fn" >/dev/null; then
-      "$fn" "$profile"
-    else
-      warn "No refresh handler for auth type: $auth_type"
-    fi
-  fi
-}
-
-# ── BANNER ────────────────────────────────────────────────────────────────────
-print_banner() {
-  echo
-  echo -e "${BOLD}╔══════════════════════════════════════╗${RESET}"
-  echo -e "${BOLD}║  gen-env  v${VERSION}$(printf '%*s' $((24 - ${#VERSION})) '')║${RESET}"
-  echo -e "${BOLD}╚══════════════════════════════════════╝${RESET}"
-  echo
-  echo -e "  ${DIM}Config: ${CONFIG_FILE}${RESET}"
-  echo
-}
-
-# ── --list ────────────────────────────────────────────────────────────────────
 cmd_list() {
   load_config
   echo
@@ -416,8 +41,7 @@ cmd_list() {
       local pid pname ppath
       pid=$(cfg ".companies[$ci].projects[$pi].id")
       pname=$(cfg ".companies[$ci].projects[$pi].name")
-      ppath=$(cfg ".companies[$ci].projects[$pi].path")
-      ppath=$(expand_path "$ppath")
+      ppath=$(expand_path "$(cfg ".companies[$ci].projects[$pi].path")")
 
       local has_services
       has_services=$(cfg ".companies[$ci].projects[$pi] | has(\"services\")")
@@ -427,26 +51,20 @@ cmd_list() {
         local svc_count
         svc_count=$(cfg ".companies[$ci].projects[$pi].services | length")
         for (( si=0; si<svc_count; si++ )); do
-          local sid sname envlist output
+          local sid envlist
           sid=$(cfg ".companies[$ci].projects[$pi].services[$si].id")
-          sname=$(cfg ".companies[$ci].projects[$pi].services[$si].name")
           envlist=$(cfg ".companies[$ci].projects[$pi].services[$si].envs | keys | join(\" \")")
-          local last_svc=$(( svc_count - 1 ))
-          local prefix="├"
-          [[ $si -eq $last_svc ]] && prefix="└"
-
-          # Get output from first env
-          local first_env
+          local first_env output
           first_env=$(cfg ".companies[$ci].projects[$pi].services[$si].envs | keys[0]")
           output=$(cfg ".companies[$ci].projects[$pi].services[$si].envs[\"$first_env\"].output // \"\"")
 
+          local prefix="├"
+          [[ $si -eq $(( svc_count - 1 )) ]] && prefix="└"
           echo -e "      ${prefix} ${sid}  ${DIM}envs: ${envlist}${RESET}$([ -n "$output" ] && echo "  ${DIM}→  ${output}${RESET}")"
         done
       else
         local envlist
         envlist=$(cfg ".companies[$ci].projects[$pi].envs | keys | join(\" \")")
-        local output
-        output=$(cfg ".companies[$ci].projects[$pi].envs | to_entries[0].value.output // \"\"")
         echo -e "    ${CYAN}${pid}${RESET}  ${DIM}${ppath}   envs: ${envlist}${RESET}"
       fi
     done
@@ -454,15 +72,16 @@ cmd_list() {
   echo
 }
 
-# ── GENERATE FOR A SINGLE SERVICE/PROJECT ENV ─────────────────────────────────
-# generate_env COMPANY_IDX PROJECT_IDX ENV [SERVICE_IDX|-1] PROFILE DRY_RUN
-# Returns: sets LAST_ENV_OUTPUT and LAST_ENV_VARS
+# ── generate_env ─────────────────────────────────────────────────────────────
+# Fetches env vars for one project/service + environment combo.
+# Sets globals: LAST_ENV_OUTPUT (file path) and LAST_ENV_VARS (content).
+
 LAST_ENV_OUTPUT=""
 LAST_ENV_VARS=""
 
 generate_env() {
-  local ci="$1" pi="$2" env_name="$3" si="$4" profile="$5" dry_run="$6"
-  local label prefix=""
+  local ci="$1" pi="$2" env_name="$3" si="$4" profile="$5"
+  local label
 
   if [[ "$si" == "-1" ]]; then
     label=$(cfg ".companies[$ci].projects[$pi].name")
@@ -470,7 +89,7 @@ generate_env() {
     label=$(cfg ".companies[$ci].projects[$pi].services[$si].name")
   fi
 
-  # Get region: service overrides project
+  # Region: service-level overrides project-level
   local region
   if [[ "$si" != "-1" ]]; then
     region=$(cfg ".companies[$ci].projects[$pi].services[$si].aws_region // .companies[$ci].projects[$pi].aws_region")
@@ -478,7 +97,7 @@ generate_env() {
     region=$(cfg ".companies[$ci].projects[$pi].aws_region")
   fi
 
-  # Get sources JSON
+  # Sources JSON array
   local sources_json
   if [[ "$si" != "-1" ]]; then
     sources_json=$(echo "$CONFIG" | jq -c ".companies[$ci].projects[$pi].services[$si].envs[\"$env_name\"].sources // []")
@@ -486,19 +105,18 @@ generate_env() {
     sources_json=$(echo "$CONFIG" | jq -c ".companies[$ci].projects[$pi].envs[\"$env_name\"].sources // []")
   fi
 
-  # Get output path
+  # Output file path
   local output_rel
   if [[ "$si" != "-1" ]]; then
     output_rel=$(cfg ".companies[$ci].projects[$pi].services[$si].envs[\"$env_name\"].output")
   else
     output_rel=$(cfg ".companies[$ci].projects[$pi].envs[\"$env_name\"].output")
   fi
-
   local project_path
   project_path=$(expand_path "$(cfg ".companies[$ci].projects[$pi].path")")
   local output_abs="${project_path}/${output_rel}"
 
-  # Get template
+  # Template file (optional)
   local template_rel=""
   if [[ "$si" != "-1" ]]; then
     template_rel=$(cfg ".companies[$ci].projects[$pi].services[$si].template // \"\"")
@@ -511,24 +129,27 @@ generate_env() {
   [[ -n "$template_rel" && "$template_rel" != "null" ]] && \
     template_abs="${project_path}/${template_rel}"
 
-  # Fetch
+  # Fetch from AWS sources
   local src_count
   src_count=$(echo "$sources_json" | jq 'length')
 
   local fetched=""
   if (( src_count > 0 )); then
-    local spinner_msg="${label} — Fetching"
-    start_spinner "$spinner_msg"
-    fetched=$(fetch_sources "$sources_json" "$profile" "$region") || {
-      stop_spinner
+    local tmpfile
+    tmpfile=$(mktemp)
+    trap "rm -f '$tmpfile'" RETURN
+    info "${label} — Fetching..." >&2
+    fetch_sources "$sources_json" "$profile" "$region" > "$tmpfile" || {
+      rm -f "$tmpfile"
       die "Fetch failed for $label"
     }
-    stop_spinner
+    fetched=$(cat "$tmpfile")
+    rm -f "$tmpfile"
   else
     ok "${label} — template only"
   fi
 
-  # Template merge
+  # Merge with template (fills in missing keys)
   if [[ -n "$template_abs" && -f "$template_abs" ]]; then
     fetched=$(merge_with_template "$fetched" "$template_abs")
   fi
@@ -541,24 +162,25 @@ generate_env() {
   LAST_ENV_VARS="$fetched"
 }
 
-# ── MAIN ──────────────────────────────────────────────────────────────────────
+# ── Main ─────────────────────────────────────────────────────────────────────
+
 main() {
-  # ── Arg parsing ──────────────────────────────────────────────────────────
+  # ── Parse arguments ──────────────────────────────────────────────────────
   local opt_company="" opt_project="" opt_service="" opt_env=""
   local opt_output="" opt_dry_run=false opt_refresh_creds=false
   local opt_list=false opt_help=false
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --company)        opt_company="$2";   shift 2 ;;
-      --project)        opt_project="$2";   shift 2 ;;
-      --service)        opt_service="$2";   shift 2 ;;
-      --env)            opt_env="$2";       shift 2 ;;
-      --output)         opt_output="$2";    shift 2 ;;
-      --dry-run)        opt_dry_run=true;   shift ;;
+      --company)        opt_company="$2";      shift 2 ;;
+      --project)        opt_project="$2";      shift 2 ;;
+      --service)        opt_service="$2";      shift 2 ;;
+      --env)            opt_env="$2";          shift 2 ;;
+      --output)         opt_output="$2";       shift 2 ;;
+      --dry-run)        opt_dry_run=true;      shift ;;
       --refresh-creds)  opt_refresh_creds=true; shift ;;
-      --list)           opt_list=true;      shift ;;
-      --help|-h)        opt_help=true;      shift ;;
+      --list)           opt_list=true;         shift ;;
+      --help|-h)        opt_help=true;         shift ;;
       *) die "Unknown option: $1. Use --help for usage." ;;
     esac
   done
@@ -598,7 +220,7 @@ EOF
 
   print_banner
 
-  # ── Company selection ─────────────────────────────────────────────────────
+  # ── Step 1: Pick a company ───────────────────────────────────────────────
   local company_count
   company_count=$(cfg '.companies | length')
   (( company_count > 0 )) || die "No companies in config."
@@ -627,14 +249,13 @@ EOF
     done
   fi
 
-  local company_name auth_type profile_map_json
-  company_name=$(cfg ".companies[$ci].name")
+  local auth_type
   auth_type=$(cfg ".companies[$ci].auth.type")
 
-  # ── Project selection ─────────────────────────────────────────────────────
+  # ── Step 2: Pick a project ──────────────────────────────────────────────
   local proj_count
   proj_count=$(cfg ".companies[$ci].projects | length")
-  (( proj_count > 0 )) || die "No projects for company: $company_name"
+  (( proj_count > 0 )) || die "No projects for company: $(cfg ".companies[$ci].name")"
 
   local pi=-1
   if [[ -n "$opt_project" ]]; then
@@ -645,26 +266,23 @@ EOF
     done
     (( pi >= 0 )) || die "Project not found: $opt_project"
   else
-    # Try auto-detect from $PWD
-    local detected_pi=-1
+    # Try to auto-detect from current directory
     local cwd
     cwd=$(pwd)
     for (( i=0; i<proj_count; i++ )); do
       local ppath
       ppath=$(expand_path "$(cfg ".companies[$ci].projects[$i].path")")
       if [[ "$cwd" == "$ppath" || "$cwd" == "$ppath/"* ]]; then
-        detected_pi=$i
+        pi=$i
         break
       fi
     done
 
-    if (( detected_pi >= 0 )); then
-      pi=$detected_pi
-      local pname ppath
-      pname=$(cfg ".companies[$ci].projects[$pi].name")
+    if (( pi >= 0 )); then
+      local ppath
       ppath=$(expand_path "$(cfg ".companies[$ci].projects[$pi].path")")
       info "Project:  ${DIM}(auto-detected from ${ppath})${RESET}"
-      echo -e "    ${GREEN}❯${RESET} ${pname}   ${DIM}${ppath}${RESET}"
+      echo -e "    ${GREEN}❯${RESET} $(cfg ".companies[$ci].projects[$pi].name")   ${DIM}${ppath}${RESET}"
     else
       local proj_names=()
       for (( i=0; i<proj_count; i++ )); do
@@ -678,16 +296,14 @@ EOF
     fi
   fi
 
-  local project_name profile_group
-  project_name=$(cfg ".companies[$ci].projects[$pi].name")
+  local profile_group
   profile_group=$(cfg ".companies[$ci].projects[$pi].profile_group")
 
-  # ── Service selection (monorepos) ─────────────────────────────────────────
+  # ── Step 3: Pick a service (monorepos only) ─────────────────────────────
   local has_services do_all_services=false
   has_services=$(cfg ".companies[$ci].projects[$pi] | has(\"services\")")
 
-  local si=-1
-  local selected_services=()  # indices
+  local selected_services=()
 
   if [[ "$has_services" == "true" ]]; then
     local svc_count
@@ -700,7 +316,7 @@ EOF
       else
         for (( i=0; i<svc_count; i++ )); do
           if [[ "$(cfg ".companies[$ci].projects[$pi].services[$i].id")" == "$opt_service" ]]; then
-            si=$i; selected_services=($i); break
+            selected_services=($i); break
           fi
         done
         (( ${#selected_services[@]} > 0 )) || die "Service not found: $opt_service"
@@ -718,16 +334,15 @@ EOF
         for (( i=0; i<svc_count; i++ )); do selected_services+=($i); done
       else
         for (( i=0; i<svc_count; i++ )); do
-          [[ "$(cfg ".companies[$ci].projects[$pi].services[$i].name")" == "$selected_svc" ]] && si=$i && selected_services=($i) && break
+          [[ "$(cfg ".companies[$ci].projects[$pi].services[$i].name")" == "$selected_svc" ]] && selected_services=($i) && break
         done
       fi
     fi
   else
-    selected_services=(-1)  # -1 = no service (simple project)
+    selected_services=(-1)  # -1 means "simple project, no services"
   fi
 
-  # ── Environment selection ─────────────────────────────────────────────────
-  # Get envs from first selected service (or project if simple)
+  # ── Step 4: Pick an environment ─────────────────────────────────────────
   local env_names=()
   if [[ "${selected_services[0]}" == "-1" ]]; then
     while IFS= read -r e; do env_names+=("$e"); done < \
@@ -750,7 +365,7 @@ EOF
     env_name=$(select_from_list "Environment" "${env_names[@]}")
   fi
 
-  # ── AWS profile & credentials ─────────────────────────────────────────────
+  # ── Step 5: Check AWS credentials ──────────────────────────────────────
   local aws_profile
   aws_profile=$(echo "$CONFIG" | jq -r ".companies[$ci].profile_map[\"$profile_group\"][\"$env_name\"]")
   [[ -z "$aws_profile" || "$aws_profile" == "null" ]] && \
@@ -765,38 +380,25 @@ EOF
     local cred_status
     cred_status=$(check_credentials "$auth_type" "$aws_profile")
     case "$cred_status" in
-      valid:*)
-        local expires="${cred_status#valid:}"
-        ok "Credentials valid (expires in ${expires})"
-        ;;
-      static)
-        ok "Static profile — no expiry check"
-        ;;
-      expired)
-        offer_refresh "$auth_type" "$aws_profile"
-        ;;
-      *)
-        warn "Could not verify credentials for profile: $aws_profile"
-        ;;
+      valid:*)  ok "Credentials valid (expires in ${cred_status#valid:})" ;;
+      static)   ok "Static profile — no expiry check" ;;
+      expired)  offer_refresh "$auth_type" "$aws_profile" ;;
+      *)        warn "Could not verify credentials for profile: $aws_profile" ;;
     esac
   fi
 
   echo
 
-  # ── Fetch ─────────────────────────────────────────────────────────────────
+  # ── Step 6: Fetch env vars ─────────────────────────────────────────────
   declare -a all_outputs=()
   declare -a all_vars=()
 
   if $do_all_services; then
-    local total=${#selected_services[@]}
-    local idx=1
     for si_iter in "${selected_services[@]}"; do
-      generate_env "$ci" "$pi" "$env_name" "$si_iter" "$aws_profile" "$opt_dry_run"
+      generate_env "$ci" "$pi" "$env_name" "$si_iter" "$aws_profile"
       all_outputs+=("$LAST_ENV_OUTPUT")
       all_vars+=("$LAST_ENV_VARS")
-      (( idx++ ))
     done
-
     echo
     local total_vars=0
     for v in "${all_vars[@]}"; do
@@ -804,17 +406,14 @@ EOF
     done
     info "Total: ${#all_outputs[@]} files, ${total_vars} vars"
   else
-    local target_si="${selected_services[0]}"
-    generate_env "$ci" "$pi" "$env_name" "$target_si" "$aws_profile" "$opt_dry_run"
+    generate_env "$ci" "$pi" "$env_name" "${selected_services[0]}" "$aws_profile"
     all_outputs+=("$LAST_ENV_OUTPUT")
     all_vars+=("$LAST_ENV_VARS")
-    local total_vars
-    total_vars=$(count_lines "$LAST_ENV_VARS")
     echo
-    info "Output: ${LAST_ENV_OUTPUT}  (${total_vars} vars total)"
+    info "Output: ${LAST_ENV_OUTPUT}  ($(count_lines "$LAST_ENV_VARS") vars total)"
   fi
 
-  # ── Action prompt ─────────────────────────────────────────────────────────
+  # ── Step 7: Write / Preview / Quit ─────────────────────────────────────
   if $opt_dry_run; then
     echo
     bold "── Dry run — preview ──────────────────────────"
@@ -838,9 +437,7 @@ EOF
   case "${action,,}" in
     w|"")
       for (( i=0; i<${#all_outputs[@]}; i++ )); do
-        local out_dir
-        out_dir=$(dirname "${all_outputs[$i]}")
-        mkdir -p "$out_dir"
+        mkdir -p "$(dirname "${all_outputs[$i]}")"
         printf '%s\n' "${all_vars[$i]}" > "${all_outputs[$i]}"
         ok "Written: ${all_outputs[$i]}"
       done
