@@ -172,3 +172,104 @@ merge_with_template() {
 
   echo "$result"
 }
+
+# ── filter_env_lines ─────────────────────────────────────────────────────────
+# Removes lines whose key matches any entry in exclude_json (a JSON array).
+# Entries without anchors (^ or $) are auto-wrapped as exact-name matches.
+# Entries with anchors are used as-is (full regex).
+#
+# Usage: filtered=$(filter_env_lines "$lines" "$exclude_json")
+
+filter_env_lines() {
+  local lines="$1" exclude_json="$2"
+
+  if [[ -z "$lines" || -z "$exclude_json" || "$exclude_json" == "[]" || "$exclude_json" == "null" ]]; then
+    echo "$lines"
+    return
+  fi
+
+  local patterns=()
+  while IFS= read -r pattern; do
+    patterns+=("$pattern")
+  done < <(echo "$exclude_json" | jq -r '.[]')
+
+  (( ${#patterns[@]} == 0 )) && { echo "$lines"; return; }
+
+  local result=""
+  while IFS= read -r line; do
+    [[ -z "$line" ]] && continue
+    local key="${line%%=*}"
+    local excluded=false
+
+    for pattern in "${patterns[@]}"; do
+      local regex="$pattern"
+      # Auto-wrap as exact match when the pattern has no anchors at all
+      if [[ "$pattern" != *'^'* && "$pattern" != *'$'* ]]; then
+        regex="^${pattern}$"
+      fi
+      if [[ "$key" =~ $regex ]]; then
+        excluded=true
+        break
+      fi
+    done
+
+    $excluded || result=$(printf '%s\n%s' "$result" "$line")
+  done < <(printf '%s\n' "$lines")
+
+  echo "${result#$'\n'}"
+}
+
+# ── sort_env_lines ───────────────────────────────────────────────────────────
+# Sorts KEY="VALUE" lines alphabetically by key name (case-sensitive, LC_ALL=C).
+# Empty lines are dropped.
+#
+# Usage: sorted=$(sort_env_lines "$lines")
+
+sort_env_lines() {
+  local lines="$1"
+  [[ -z "$lines" ]] && return
+  printf '%s\n' "$lines" | grep -v '^$' | LC_ALL=C sort
+}
+
+# ── override_env_lines ───────────────────────────────────────────────────────
+# Applies overrides from a JSON object to the env lines.
+# Keys in the override object replace existing values or add new ones.
+#
+# Usage: overridden=$(override_env_lines "$lines" "$overrides_json")
+
+override_env_lines() {
+  local lines="$1" overrides_json="$2"
+
+  if [[ -z "$overrides_json" || "$overrides_json" == "{}" || "$overrides_json" == "null" ]]; then
+    echo "$lines"
+    return
+  fi
+
+  local -A kv
+  local order=()
+
+  # Parse existing lines
+  while IFS= read -r line; do
+    [[ -z "$line" ]] && continue
+    local key="${line%%=*}"
+    if [[ -z "${kv[$key]+_}" ]]; then
+      order+=("$key")
+    fi
+    kv["$key"]="${line#*=}"
+  done < <(printf '%s\n' "$lines")
+
+  # Apply overrides
+  while IFS= read -r key; do
+    local value
+    value=$(echo "$overrides_json" | jq -r --arg k "$key" '.[$k]')
+    if [[ -z "${kv[$key]+_}" ]]; then
+      order+=("$key")
+    fi
+    kv["$key"]="\"$value\""
+  done < <(echo "$overrides_json" | jq -r 'keys[]')
+
+  # Reconstruct lines
+  for k in "${order[@]}"; do
+    echo "${k}=${kv[$k]}"
+  done
+}

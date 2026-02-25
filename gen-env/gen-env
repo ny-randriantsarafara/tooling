@@ -105,6 +105,22 @@ generate_env() {
     sources_json=$(echo "$CONFIG" | jq -c ".companies[$ci].projects[$pi].envs[\"$env_name\"].sources // []")
   fi
 
+  # Exclude list (JSON array or null)
+  local exclude_json
+  if [[ "$si" != "-1" ]]; then
+    exclude_json=$(echo "$CONFIG" | jq -c ".companies[$ci].projects[$pi].services[$si].envs[\"$env_name\"].exclude // []")
+  else
+    exclude_json=$(echo "$CONFIG" | jq -c ".companies[$ci].projects[$pi].envs[\"$env_name\"].exclude // []")
+  fi
+
+  # Overrides (JSON object or null)
+  local overrides_json
+  if [[ "$si" != "-1" ]]; then
+    overrides_json=$(echo "$CONFIG" | jq -c ".companies[$ci].projects[$pi].services[$si].envs[\"$env_name\"].overrides // {}")
+  else
+    overrides_json=$(echo "$CONFIG" | jq -c ".companies[$ci].projects[$pi].envs[\"$env_name\"].overrides // {}")
+  fi
+
   # Output file path
   local output_rel
   if [[ "$si" != "-1" ]]; then
@@ -153,6 +169,15 @@ generate_env() {
   if [[ -n "$template_abs" && -f "$template_abs" ]]; then
     fetched=$(merge_with_template "$fetched" "$template_abs")
   fi
+
+  # Filter excluded keys
+  fetched=$(filter_env_lines "$fetched" "$exclude_json")
+
+  # Apply overrides
+  fetched=$(override_env_lines "$fetched" "$overrides_json")
+
+  # Sort alphabetically by key
+  fetched=$(sort_env_lines "$fetched")
 
   local var_count
   var_count=$(count_lines "$fetched")

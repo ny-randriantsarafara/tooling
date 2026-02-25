@@ -108,6 +108,34 @@ Multiple sources are merged in order — later ones override earlier ones if the
 
 **`template`** (optional) — path to a `.env.example` or `.env.dist` file relative to the project root. Any keys in the template that weren't fetched from AWS will be added to the output with their default values.
 
+**`exclude`** (optional) — a list of env var keys to remove from the final output. Each entry is matched against the key name as a regex, so both exact names and patterns work:
+- `"SECRET_KEY"` — removes only that key (exact match)
+- `"^INTERNAL_.*"` — removes all keys starting with `INTERNAL_`
+- `"_TOKEN$"` — removes all keys ending in `_TOKEN`
+
+```json
+"dev": {
+  "sources": [...],
+  "output": ".env",
+  "exclude": ["SECRET_KEY", "^INTERNAL_.*", "_TOKEN$"]
+}
+```
+
+**`overrides`** (optional) — a JSON object of key-value pairs to override or add to the final output. Useful for setting local-specific values (e.g., `localhost` instead of remote hosts):
+
+```json
+"dev": {
+  "sources": [...],
+  "output": ".env",
+  "overrides": {
+    "DATABASE_HOST": "localhost",
+    "REDIS_HOST": "localhost"
+  }
+}
+```
+
+**Sorting** — the output `.env` is always sorted alphabetically by key name. This keeps generated files stable across runs and makes diffs readable.
+
 ### Auth types
 
 | Your setup | Use this |

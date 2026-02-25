@@ -37,7 +37,14 @@
                 { "type": "ecs", "cluster": "acme-cluster", "service": "api-service" },
                 { "type": "ssm", "path": "/acme/api/dev" }
               ],
-              "output": ".env"
+              "output": ".env",
+              "_comment_exclude": "Optional: remove specific keys from the output. Exact names and regex both work. Output is always sorted alphabetically.",
+              "exclude": ["SECRET_KEY", "^DEBUG_.*", "_INTERNAL$"],
+              "_comment_overrides": "Optional: override or add specific key-value pairs in the final output.",
+              "overrides": {
+                "DATABASE_HOST": "localhost",
+                "REDIS_HOST": "localhost"
+              }
             },
             "staging": {
               "sources": [
