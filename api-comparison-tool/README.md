@@ -1,6 +1,6 @@
-# GraphQL Comparison Tool
+# API Comparison Tool
 
-Compare GraphQL API responses between two endpoints (reference vs candidate) to detect regressions or validate migrations.
+Compare API responses (GraphQL and REST) between two endpoints (reference vs candidate) to detect regressions or validate migrations.
 
 ## Prerequisites
 
@@ -45,6 +45,8 @@ Opens at `http://localhost:5173`. View run history, inspect diffs, and re-run co
 
 ## Query Format
 
+### GraphQL Queries
+
 Place `.graphql` files in `queries/graphql/` with companion `.meta.json` files:
 
 **`queries/graphql/example.graphql`**
@@ -64,6 +66,10 @@ query GetArticle($id: ID!) {
   "operationName": "GetArticle"
 }
 ```
+
+### REST Queries
+
+Place query files in `queries/rest/` following the same pattern with `.meta.json` for request details.
 
 ## Database
 

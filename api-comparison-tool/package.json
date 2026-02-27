@@ -1,5 +1,5 @@
 {
-  "name": "graphql-comparison-tool",
+  "name": "api-comparison-tool",
   "version": "1.0.0",
   "private": true,
   "type": "module",
