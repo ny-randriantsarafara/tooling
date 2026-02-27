@@ -1,5 +1,5 @@
 {
-  "name": "api-comparison-tool",
+  "name": "api-regression-validator",
   "version": "1.0.0",
   "private": true,
   "type": "module",

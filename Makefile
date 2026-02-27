@@ -32,3 +32,12 @@ check-deps:
 	@command -v aws  >/dev/null || (echo "ERROR: aws CLI not found" && exit 1)
 	@command -v jq   >/dev/null || (echo "ERROR: jq not found" && exit 1)
 	@echo "  Dependencies OK (fzf: $$(command -v fzf >/dev/null && echo yes || echo 'no — fallback menus will be used'))"
+
+# API Regression Validator
+.PHONY: api-regression-validator
+
+api-regression-validator:
+	@echo "Installing api-regression-validator dependencies..."
+	@cd api-regression-validator && npm install
+	@cd api-regression-validator/web && npm install
+	@echo "  api-regression-validator ready. Run: cd api-regression-validator && npm run dev"

@@ -1,6 +1,6 @@
-# API Comparison Tool
+# API Regression Validator
 
-Compare API responses (GraphQL and REST) between two endpoints (reference vs candidate) to detect regressions or validate migrations.
+Validate API responses (GraphQL and REST) between two endpoints (reference vs candidate) to detect regressions during migrations or deployments.
 
 ## Prerequisites
 
