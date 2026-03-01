@@ -1,0 +1,165 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# ── audit ────────────────────────────────────────────────────────────────────
+# Senior-level codebase review CLI.
+# Runs Claude CLI against any codebase to produce structured, risk-based
+# audit reports in French and English.
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# When installed, libs live at the symlink target; in dev, they're local.
+if [[ -L "${SCRIPT_DIR}/audit-lib" ]]; then
+  LIB_DIR="$(readlink "${SCRIPT_DIR}/audit-lib")"
+elif [[ -d "${SCRIPT_DIR}/lib" ]]; then
+  LIB_DIR="${SCRIPT_DIR}/lib"
+else
+  echo "ERROR: cannot find audit lib directory" >&2
+  exit 1
+fi
+
+# shellcheck source=lib/colors.sh
+source "${LIB_DIR}/colors.sh"
+# shellcheck source=lib/helpers.sh
+source "${LIB_DIR}/helpers.sh"
+# shellcheck source=lib/detect.sh
+source "${LIB_DIR}/detect.sh"
+# shellcheck source=lib/prompt.sh
+source "${LIB_DIR}/prompt.sh"
+# shellcheck source=lib/review.sh
+source "${LIB_DIR}/review.sh"
+# shellcheck source=lib/watchlist.sh
+source "${LIB_DIR}/watchlist.sh"
+
+# ── Defaults ─────────────────────────────────────────────────────────────────
+
+MODEL="opus"
+PROFILE=""
+DRY_RUN="false"
+OUTPUT_DIR="${HOME}/reports"
+MAX_TURNS=10
+STALE_DAYS=""
+
+# ── Actions (mutually exclusive) ─────────────────────────────────────────────
+
+ACTION="audit"
+WATCH_PATH=""
+
+# ── Usage ────────────────────────────────────────────────────────────────────
+
+usage() {
+  cat <<EOF
+${BOLD}audit${RESET} — Senior-level codebase review CLI
+
+${BOLD}USAGE${RESET}
+  audit [options]
+
+${BOLD}COMMANDS${RESET}
+  audit                          Run audit on current directory
+  audit --watch [path]           Watch a parent directory (auto-audit its children on cd)
+  audit --unwatch [path]         Remove a parent directory from the watchlist
+  audit --list-watched           List all watched directories
+
+${BOLD}OPTIONS${RESET}
+  --model <model>                Claude model (default: opus)
+  --profile <profile>            Force profile: infra, backend, frontend, fullstack
+  --dry-run                      Show prompts without calling Claude
+  --output-dir <path>            Report output directory (default: ~/reports)
+  --max-turns <n>                Max Claude agent turns (default: 10)
+  --stale-days <n>               Staleness threshold for --watch (default: 7)
+  --help                         Show this help
+
+${BOLD}EXAMPLES${RESET}
+  cd ~/projects/my-api && audit
+  audit --model sonnet --profile backend
+  audit --dry-run
+  audit --watch ~/projects                    # auto-audit any project under ~/projects
+  audit --watch ~/projects --stale-days 14
+  audit --unwatch ~/projects
+  audit --list-watched
+EOF
+}
+
+# ── Argument parsing ─────────────────────────────────────────────────────────
+
+parse_args() {
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --model)
+        [[ -n "${2:-}" ]] || die "--model requires a value"
+        MODEL="$2"; shift 2 ;;
+      --profile)
+        [[ -n "${2:-}" ]] || die "--profile requires a value"
+        PROFILE="$2"; shift 2 ;;
+      --dry-run)
+        DRY_RUN="true"; shift ;;
+      --output-dir)
+        [[ -n "${2:-}" ]] || die "--output-dir requires a value"
+        OUTPUT_DIR="$(expand_path "$2")"; shift 2 ;;
+      --max-turns)
+        [[ -n "${2:-}" ]] || die "--max-turns requires a value"
+        MAX_TURNS="$2"; shift 2 ;;
+      --stale-days)
+        [[ -n "${2:-}" ]] || die "--stale-days requires a value"
+        STALE_DAYS="$2"; shift 2 ;;
+      --watch)
+        ACTION="watch"
+        if [[ -n "${2:-}" && "${2:0:1}" != "-" ]]; then
+          WATCH_PATH="$(expand_path "$2")"; shift 2
+        else
+          WATCH_PATH="$PWD"; shift
+        fi
+        ;;
+      --unwatch)
+        ACTION="unwatch"
+        if [[ -n "${2:-}" && "${2:0:1}" != "-" ]]; then
+          WATCH_PATH="$(expand_path "$2")"; shift 2
+        else
+          WATCH_PATH="$PWD"; shift
+        fi
+        ;;
+      --list-watched)
+        ACTION="list-watched"; shift ;;
+      --help|-h)
+        usage; exit 0 ;;
+      *)
+        die "Unknown option: $1" ;;
+    esac
+  done
+}
+
+# ── Main ─────────────────────────────────────────────────────────────────────
+
+main() {
+  parse_args "$@"
+
+  case "$ACTION" in
+    watch)
+      watchlist_add "$WATCH_PATH" "$PROFILE" "$STALE_DAYS"
+      ;;
+    unwatch)
+      watchlist_remove "$WATCH_PATH"
+      ;;
+    list-watched)
+      watchlist_list
+      ;;
+    audit)
+      command -v claude >/dev/null 2>&1 || die "claude CLI not found. Install it first: https://docs.anthropic.com/en/docs/claude-code"
+      command -v jq >/dev/null 2>&1 || die "jq not found. Install it first."
+
+      local target_dir="$PWD"
+      local project_name="${target_dir##*/}"
+
+      if [[ -z "$PROFILE" ]]; then
+        PROFILE=$(detect_profile "$target_dir")
+        info "Auto-detected profile: ${BOLD}${PROFILE}${RESET}"
+      else
+        info "Using profile: ${BOLD}${PROFILE}${RESET}"
+      fi
+
+      run_review "$target_dir" "$project_name" "$PROFILE" "$MODEL" "$MAX_TURNS" "$OUTPUT_DIR" "$DRY_RUN"
+      ;;
+  esac
+}
+
+main "$@"
